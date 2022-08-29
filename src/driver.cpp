@@ -29,6 +29,10 @@
 #include "ouster_ros/PacketMsg.h"
 #include "ouster_ros/ros.h"
 
+#include "ouster_decoder/StampedPacketTime.h"
+
+using StampedPacketTime = ouster_decoder::StampedPacketTime;
+using PacketMsg = ouster_ros::PacketMsg;
 using PacketMsg = ouster_ros::PacketMsg;
 using OSConfigSrv = ouster_ros::OSConfigSrv;
 namespace sensor = ouster::sensor;
@@ -85,8 +89,12 @@ int connection_loop(ros::NodeHandle& nh,
                     const sensor::sensor_info& info) {
   auto lidar_packet_pub = nh.advertise<PacketMsg>("lidar_packets", 1280);
   auto imu_packet_pub = nh.advertise<PacketMsg>("imu_packets", 100);
+  auto stamped_packet_time_pub = nh.advertise<StampedPacketTime>("sys_time", 100);
 
   auto pf = sensor::get_format(info);
+
+  StampedPacketTime sys_time_packet;
+  sys_time_packet.header.frame_id = "";
 
   PacketMsg lidar_packet, imu_packet;
   lidar_packet.buf.resize(pf.lidar_packet_size + 1);
@@ -94,6 +102,8 @@ int connection_loop(ros::NodeHandle& nh,
 
   while (ros::ok()) {
     auto state = sensor::poll_client(cli);
+    auto cur_ros_time = ros::Time::now();
+
     if (state == sensor::EXIT) {
       ROS_INFO("poll_client: caught signal, exiting");
       return EXIT_SUCCESS;
@@ -107,8 +117,12 @@ int connection_loop(ros::NodeHandle& nh,
         lidar_packet_pub.publish(lidar_packet);
     }
     if (state & sensor::IMU_DATA) {
-      if (sensor::read_imu_packet(cli, imu_packet.buf.data(), pf))
+      if (sensor::read_imu_packet(cli, imu_packet.buf.data(), pf)) {
         imu_packet_pub.publish(imu_packet);
+        sys_time_packet.header.stamp = cur_ros_time;
+        sys_time_packet.sensor_time = *((uint64_t*)imu_packet.buf.data()); // first 8 bytes of imu packet is the sys_ts
+        stamped_packet_time_pub.publish( sys_time_packet );
+      }
     }
     ros::spinOnce();
   }
